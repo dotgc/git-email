@@ -29,6 +29,5 @@ def email_hook():
 def fetch_url(url):
     resp = requests.get(url)
 
-
 if __name__ == "__main__":
     app.run(host='localhost', port=5000)
