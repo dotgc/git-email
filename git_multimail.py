@@ -1,5 +1,23 @@
 #! /usr/bin/env python
 
+import sys
+import os
+import re
+import bisect
+import socket
+import subprocess
+import shlex
+import optparse
+import logging
+import smtplib
+try:
+    import ssl
+except ImportError:
+    # Python < 2.6 do not have ssl, but that's OK if we don't use it.
+    pass
+import time
+import cgi
+
 __version__ = '1.4.dev'
 
 # Copyright (c) 2015-2016 Matthieu Moy and others
@@ -48,88 +66,30 @@ See the accompanying README file for the complete documentation.
 
 """
 
-import sys
-import os
-import re
-import bisect
-import socket
-import subprocess
-import shlex
-import optparse
-import logging
-import smtplib
-try:
-    import ssl
-except ImportError:
-    # Python < 2.6 do not have ssl, but that's OK if we don't use it.
-    pass
-import time
-import cgi
-
-PYTHON3 = sys.version_info >= (3, 0)
-
-if sys.version_info <= (2, 5):
-    def all(iterable):
-        for element in iterable:
-            if not element:
-                return False
-            return True
-
 
 def is_ascii(s):
     return all(ord(c) < 128 and ord(c) > 0 for c in s)
 
+def is_string(s):
+    try:
+        return isinstance(s, basestring)
+    except NameError:  # Silence Pyflakes warning
+        raise
 
-if PYTHON3:
-    def is_string(s):
-        return isinstance(s, str)
+def str_to_bytes(s):
+    return s
 
-    def str_to_bytes(s):
-        return s.encode(ENCODING)
+def bytes_to_str(s, errors='strict'):
+    return s
 
-    def bytes_to_str(s, errors='strict'):
-        return s.decode(ENCODING, errors)
+def write_str(f, msg):
+    f.write(msg)
 
-    unicode = str
+def read_line(f):
+    return f.readline()
 
-    def write_str(f, msg):
-        # Try outputing with the default encoding. If it fails,
-        # try UTF-8.
-        try:
-            f.buffer.write(msg.encode(sys.getdefaultencoding()))
-        except UnicodeEncodeError:
-            f.buffer.write(msg.encode(ENCODING))
-
-    def read_line(f):
-        # Try reading with the default encoding. If it fails,
-        # try UTF-8.
-        out = f.buffer.readline()
-        try:
-            return out.decode(sys.getdefaultencoding())
-        except UnicodeEncodeError:
-            return out.decode(ENCODING)
-else:
-    def is_string(s):
-        try:
-            return isinstance(s, basestring)
-        except NameError:  # Silence Pyflakes warning
-            raise
-
-    def str_to_bytes(s):
-        return s
-
-    def bytes_to_str(s, errors='strict'):
-        return s
-
-    def write_str(f, msg):
-        f.write(msg)
-
-    def read_line(f):
-        return f.readline()
-
-    def next(it):
-        return it.next()
-
+def next(it):
+    return it.next()
 
 try:
     from email.charset import Charset
@@ -166,19 +126,19 @@ ADDR_HEADERS = set(['from', 'to', 'cc', 'bcc', 'reply-to', 'sender'])
 REF_CREATED_SUBJECT_TEMPLATE = (
     '%(emailprefix)s%(refname_type)s %(short_refname)s created'
     ' (now %(newrev_short)s)'
-    )
+)
 REF_UPDATED_SUBJECT_TEMPLATE = (
     '%(emailprefix)s%(refname_type)s %(short_refname)s updated'
     ' (%(oldrev_short)s -> %(newrev_short)s)'
-    )
+)
 REF_DELETED_SUBJECT_TEMPLATE = (
     '%(emailprefix)s%(refname_type)s %(short_refname)s deleted'
     ' (was %(oldrev_short)s)'
-    )
+)
 
 COMBINED_REFCHANGE_REVISION_SUBJECT_TEMPLATE = (
     '%(emailprefix)s%(refname_type)s %(short_refname)s updated: %(oneline)s'
-    )
+)
 
 REFCHANGE_HEADER_TEMPLATE = """\
 Date: %(send_date)s
@@ -2765,14 +2725,12 @@ class FilterLinesEnvironmentMixin(Environment):
     def filter_body(self, lines):
         lines = super(FilterLinesEnvironmentMixin, self).filter_body(lines)
         if self.__strict_utf8:
-            if not PYTHON3:
-                lines = (line.decode(ENCODING, 'replace') for line in lines)
+            lines = (line.decode(ENCODING, 'replace') for line in lines)
             # Limit the line length in Unicode-space to avoid
             # splitting characters:
             if self.__emailmaxlinelength:
                 lines = limit_linelength(lines, self.__emailmaxlinelength)
-            if not PYTHON3:
-                lines = (line.encode(ENCODING, 'replace') for line in lines)
+            lines = (line.encode(ENCODING, 'replace') for line in lines)
         elif self.__emailmaxlinelength:
             lines = limit_linelength(lines, self.__emailmaxlinelength)
 
@@ -3095,60 +3053,6 @@ class GenericEnvironment(
         ):
     pass
 
-
-class GitoliteEnvironmentMixin(Environment):
-    def get_repo_shortname(self):
-        # The gitolite environment variable $GL_REPO is a pretty good
-        # repo_shortname (though it's probably not as good as a value
-        # the user might have explicitly put in his config).
-        return (
-            self.osenv.get('GL_REPO', None) or
-            super(GitoliteEnvironmentMixin, self).get_repo_shortname()
-            )
-
-    def get_pusher(self):
-        return self.osenv.get('GL_USER', 'unknown user')
-
-    def get_fromaddr(self, change=None):
-        GL_USER = self.osenv.get('GL_USER')
-        if GL_USER is not None:
-            # Find the path to gitolite.conf.  Note that gitolite v3
-            # did away with the GL_ADMINDIR and GL_CONF environment
-            # variables (they are now hard-coded).
-            GL_ADMINDIR = self.osenv.get(
-                'GL_ADMINDIR',
-                os.path.expanduser(os.path.join('~', '.gitolite')))
-            GL_CONF = self.osenv.get(
-                'GL_CONF',
-                os.path.join(GL_ADMINDIR, 'conf', 'gitolite.conf'))
-            if os.path.isfile(GL_CONF):
-                f = open(GL_CONF, 'rU')
-                try:
-                    in_user_emails_section = False
-                    re_template = r'^\s*#\s*%s\s*$'
-                    re_begin, re_user, re_end = (
-                        re.compile(re_template % x)
-                        for x in (
-                            r'BEGIN\s+USER\s+EMAILS',
-                            re.escape(GL_USER) + r'\s+(.*)',
-                            r'END\s+USER\s+EMAILS',
-                            ))
-                    for l in f:
-                        l = l.rstrip('\n')
-                        if not in_user_emails_section:
-                            if re_begin.match(l):
-                                in_user_emails_section = True
-                            continue
-                        if re_end.match(l):
-                            break
-                        m = re_user.match(l)
-                        if m:
-                            return m.group(1)
-                finally:
-                    f.close()
-        return super(GitoliteEnvironmentMixin, self).get_fromaddr(change)
-
-
 class IncrementalDateTime(object):
     """Simple wrapper to give incremental date/times.
 
@@ -3165,133 +3069,6 @@ class IncrementalDateTime(object):
         formatted = formatdate(self.time, True)
         self.time += 1
         return formatted
-
-
-class GitoliteEnvironment(
-        ProjectdescEnvironmentMixin,
-        ConfigMaxlinesEnvironmentMixin,
-        ComputeFQDNEnvironmentMixin,
-        ConfigFilterLinesEnvironmentMixin,
-        ConfigRecipientsEnvironmentMixin,
-        ConfigRefFilterEnvironmentMixin,
-        PusherDomainEnvironmentMixin,
-        ConfigOptionsEnvironmentMixin,
-        GitoliteEnvironmentMixin,
-        Environment,
-        ):
-    pass
-
-
-class StashEnvironmentMixin(Environment):
-    def __init__(self, user=None, repo=None, **kw):
-        super(StashEnvironmentMixin, self).__init__(**kw)
-        self.__user = user
-        self.__repo = repo
-
-    def get_repo_shortname(self):
-        return self.__repo
-
-    def get_pusher(self):
-        return re.match('(.*?)\s*<', self.__user).group(1)
-
-    def get_pusher_email(self):
-        return self.__user
-
-    def get_fromaddr(self, change=None):
-        return self.__user
-
-
-class StashEnvironment(
-        StashEnvironmentMixin,
-        ProjectdescEnvironmentMixin,
-        ConfigMaxlinesEnvironmentMixin,
-        ComputeFQDNEnvironmentMixin,
-        ConfigFilterLinesEnvironmentMixin,
-        ConfigRecipientsEnvironmentMixin,
-        ConfigRefFilterEnvironmentMixin,
-        PusherDomainEnvironmentMixin,
-        ConfigOptionsEnvironmentMixin,
-        Environment,
-        ):
-    pass
-
-
-class GerritEnvironmentMixin(Environment):
-    def __init__(self, project=None, submitter=None, update_method=None, **kw):
-        super(GerritEnvironmentMixin, self).__init__(**kw)
-        self.__project = project
-        self.__submitter = submitter
-        self.__update_method = update_method
-        "Make an 'update_method' value available for templates."
-        self.COMPUTED_KEYS += ['update_method']
-
-    def get_repo_shortname(self):
-        return self.__project
-
-    def get_pusher(self):
-        if self.__submitter:
-            if self.__submitter.find('<') != -1:
-                # Submitter has a configured email, we transformed
-                # __submitter into an RFC 2822 string already.
-                return re.match('(.*?)\s*<', self.__submitter).group(1)
-            else:
-                # Submitter has no configured email, it's just his name.
-                return self.__submitter
-        else:
-            # If we arrive here, this means someone pushed "Submit" from
-            # the gerrit web UI for the CR (or used one of the programmatic
-            # APIs to do the same, such as gerrit review) and the
-            # merge/push was done by the Gerrit user.  It was technically
-            # triggered by someone else, but sadly we have no way of
-            # determining who that someone else is at this point.
-            return 'Gerrit'  # 'unknown user'?
-
-    def get_pusher_email(self):
-        if self.__submitter:
-            return self.__submitter
-        else:
-            return super(GerritEnvironmentMixin, self).get_pusher_email()
-
-    def get_fromaddr(self, change=None):
-        if self.__submitter and self.__submitter.find('<') != -1:
-            return self.__submitter
-        else:
-            return super(GerritEnvironmentMixin, self).get_fromaddr(change)
-
-    def get_default_ref_ignore_regex(self):
-        default = super(GerritEnvironmentMixin, self).get_default_ref_ignore_regex()
-        return default + '|^refs/changes/|^refs/cache-automerge/|^refs/meta/'
-
-    def get_revision_recipients(self, revision):
-        # Merge commits created by Gerrit when users hit "Submit this patchset"
-        # in the Web UI (or do equivalently with REST APIs or the gerrit review
-        # command) are not something users want to see an individual email for.
-        # Filter them out.
-        committer = read_git_output(['log', '--no-walk', '--format=%cN',
-                                     revision.rev.sha1])
-        if committer == 'Gerrit Code Review':
-            return []
-        else:
-            return super(GerritEnvironmentMixin, self).get_revision_recipients(revision)
-
-    def get_update_method(self):
-        return self.__update_method
-
-
-class GerritEnvironment(
-        GerritEnvironmentMixin,
-        ProjectdescEnvironmentMixin,
-        ConfigMaxlinesEnvironmentMixin,
-        ComputeFQDNEnvironmentMixin,
-        ConfigFilterLinesEnvironmentMixin,
-        ConfigRecipientsEnvironmentMixin,
-        ConfigRefFilterEnvironmentMixin,
-        PusherDomainEnvironmentMixin,
-        ConfigOptionsEnvironmentMixin,
-        Environment,
-        ):
-    pass
-
 
 class Push(object):
     """Represent an entire push (i.e., a group of ReferenceChanges).
@@ -3699,9 +3476,6 @@ def choose_mailer(config, environment):
 
 KNOWN_ENVIRONMENTS = {
     'generic': GenericEnvironmentMixin,
-    'gitolite': GitoliteEnvironmentMixin,
-    'stash': StashEnvironmentMixin,
-    'gerrit': GerritEnvironmentMixin,
     }
 
 
@@ -3728,20 +3502,10 @@ def choose_environment(config, osenv=None, env=None, recipients=None,
         env = config.get('environment')
 
     if not env:
-        if 'GL_USER' in osenv and 'GL_REPO' in osenv:
-            env = 'gitolite'
-        else:
-            env = 'generic'
+        env = 'generic'
 
     environment_mixins.insert(0, KNOWN_ENVIRONMENTS[env])
 
-    if env == 'stash':
-        environment_kw['user'] = hook_info['stash_user']
-        environment_kw['repo'] = hook_info['stash_repo']
-    elif env == 'gerrit':
-        environment_kw['project'] = hook_info['project']
-        environment_kw['submitter'] = hook_info['submitter']
-        environment_kw['update_method'] = hook_info['update_method']
 
     if recipients:
         environment_mixins.insert(0, StaticRecipientsEnvironmentMixin)
@@ -3775,102 +3539,6 @@ def get_version():
     finally:
         os.chdir(oldcwd)
     return __version__
-
-
-def compute_gerrit_options(options, args, required_gerrit_options,
-                           raw_refname):
-    if None in required_gerrit_options:
-        raise SystemExit("Error: Specify all of --oldrev, --newrev, --refname, "
-                         "and --project; or none of them.")
-
-    if options.environment not in (None, 'gerrit'):
-        raise SystemExit("Non-gerrit environments incompatible with --oldrev, "
-                         "--newrev, --refname, and --project")
-    options.environment = 'gerrit'
-
-    if args:
-        raise SystemExit("Error: Positional parameters not allowed with "
-                         "--oldrev, --newrev, and --refname.")
-
-    # Gerrit oddly omits 'refs/heads/' in the refname when calling
-    # ref-updated hook; put it back.
-    git_dir = get_git_dir()
-    if (not os.path.exists(os.path.join(git_dir, raw_refname)) and
-        os.path.exists(os.path.join(git_dir, 'refs', 'heads',
-                                    raw_refname))):
-        options.refname = 'refs/heads/' + options.refname
-
-    # New revisions can appear in a gerrit repository either due to someone
-    # pushing directly (in which case options.submitter will be set), or they
-    # can press "Submit this patchset" in the web UI for some CR (in which
-    # case options.submitter will not be set and gerrit will not have provided
-    # us the information about who pressed the button).
-    #
-    # Note for the nit-picky: I'm lumping in REST API calls and the ssh
-    # gerrit review command in with "Submit this patchset" button, since they
-    # have the same effect.
-    if options.submitter:
-        update_method = 'pushed'
-        # The submitter argument is almost an RFC 2822 email address; change it
-        # from 'User Name (email@domain)' to 'User Name <email@domain>' so it is
-        options.submitter = options.submitter.replace('(', '<').replace(')', '>')
-    else:
-        update_method = 'submitted'
-        # Gerrit knew who submitted this patchset, but threw that information
-        # away when it invoked this hook.  However, *IF* Gerrit created a
-        # merge to bring the patchset in (project 'Submit Type' is either
-        # "Always Merge", or is "Merge if Necessary" and happens to be
-        # necessary for this particular CR), then it will have the committer
-        # of that merge be 'Gerrit Code Review' and the author will be the
-        # person who requested the submission of the CR.  Since this is fairly
-        # likely for most gerrit installations (of a reasonable size), it's
-        # worth the extra effort to try to determine the actual submitter.
-        rev_info = read_git_lines(['log', '--no-walk', '--merges',
-                                   '--format=%cN%n%aN <%aE>', options.newrev])
-        if rev_info and rev_info[0] == 'Gerrit Code Review':
-            options.submitter = rev_info[1]
-
-    # We pass back refname, oldrev, newrev as args because then the
-    # gerrit ref-updated hook is much like the git update hook
-    return (options,
-            [options.refname, options.oldrev, options.newrev],
-            {'project': options.project, 'submitter': options.submitter,
-             'update_method': update_method})
-
-
-def check_hook_specific_args(options, args):
-    raw_refname = options.refname
-    # Convert each string option unicode for Python3.
-    if PYTHON3:
-        opts = ['environment', 'recipients', 'oldrev', 'newrev', 'refname',
-                'project', 'submitter', 'stash_user', 'stash_repo']
-        for opt in opts:
-            if not hasattr(options, opt):
-                continue
-            obj = getattr(options, opt)
-            if obj:
-                enc = obj.encode('utf-8', 'surrogateescape')
-                dec = enc.decode('utf-8', 'replace')
-                setattr(options, opt, dec)
-
-    # First check for stash arguments
-    if (options.stash_user is None) != (options.stash_repo is None):
-        raise SystemExit("Error: Specify both of --stash-user and "
-                         "--stash-repo or neither.")
-    if options.stash_user:
-        options.environment = 'stash'
-        return options, args, {'stash_user': options.stash_user,
-                               'stash_repo': options.stash_repo}
-
-    # Finally, check for gerrit specific arguments
-    required_gerrit_options = (options.oldrev, options.newrev, options.refname,
-                               options.project)
-    if required_gerrit_options != (None,) * 4:
-        return compute_gerrit_options(options, args, required_gerrit_options,
-                                      raw_refname)
-
-    # No special options in use, just return what we started with
-    return options, args, {}
 
 
 class Logger(object):
@@ -3987,40 +3655,10 @@ def main(args):
             ),
         )
 
-    parser.add_option(
-        '--python-version', action='store_true', default=False,
-        help=(
-            "Display the version of Python used by git-multimail"
-            ),
-        )
-    # The following options permit this script to be run as a gerrit
-    # ref-updated hook.  See e.g.
-    # code.google.com/p/gerrit/source/browse/Documentation/config-hooks.txt
-    # We suppress help for these items, since these are specific to gerrit,
-    # and we don't want users directly using them any way other than how the
-    # gerrit ref-updated hook is called.
-    parser.add_option('--oldrev', action='store', help=optparse.SUPPRESS_HELP)
-    parser.add_option('--newrev', action='store', help=optparse.SUPPRESS_HELP)
-    parser.add_option('--refname', action='store', help=optparse.SUPPRESS_HELP)
-    parser.add_option('--project', action='store', help=optparse.SUPPRESS_HELP)
-    parser.add_option('--submitter', action='store', help=optparse.SUPPRESS_HELP)
-
-    # The following allow this to be run as a stash asynchronous post-receive
-    # hook (almost identical to a git post-receive hook but triggered also for
-    # merges of pull requests from the UI).  We suppress help for these items,
-    # since these are specific to stash.
-    parser.add_option('--stash-user', action='store', help=optparse.SUPPRESS_HELP)
-    parser.add_option('--stash-repo', action='store', help=optparse.SUPPRESS_HELP)
-
     (options, args) = parser.parse_args(args)
-    (options, args, hook_info) = check_hook_specific_args(options, args)
 
     if options.version:
         sys.stdout.write('git-multimail version ' + get_version() + '\n')
-        return
-
-    if options.python_version:
-        sys.stdout.write('Python version ' + sys.version + '\n')
         return
 
     if options.c:
