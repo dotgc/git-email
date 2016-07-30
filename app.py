@@ -11,6 +11,9 @@ app.use_debugger = DEBUG
 
 TOKEN = '064968cdbc6a496571d814dd2769aa1d2ae137d2'
 
+REPO_OWNER = 'dotgc'
+REPO_NAME = 'git-email'
+
 @app.route("/email_hook", methods=['GET', 'POST'])
 def email_hook():
     req_data = request.get_json()
@@ -19,8 +22,8 @@ def email_hook():
     except Exception as e:
         head_commit = {}
     head_commit_id = head_commit['id']
-    commit_url = 'https://api.github.com/repos/dotgc/zenforms/git/commits/%s'
-    diff_url = commit_url % head_commit_id
+    commit_url = 'https://api.github.com/repos/%s/%s/git/commits/%s'
+    diff_url = commit_url % (REPO_OWNER, REPO_NAME, head_commit_id)
     return jsonify({'diff': diff_url, 'token': TOKEN})
 
 def fetch_url(url):
