@@ -8,8 +8,9 @@ import socket
 import subprocess
 import shlex
 import optparse
-import logging
 import smtplib
+import utils
+import templates
 try:
     import ssl
 except ImportError:
@@ -66,31 +67,6 @@ See the accompanying README file for the complete documentation.
 
 """
 
-
-def is_ascii(s):
-    return all(ord(c) < 128 and ord(c) > 0 for c in s)
-
-def is_string(s):
-    try:
-        return isinstance(s, basestring)
-    except NameError:  # Silence Pyflakes warning
-        raise
-
-def str_to_bytes(s):
-    return s
-
-def bytes_to_str(s, errors='strict'):
-    return s
-
-def write_str(f, msg):
-    f.write(msg)
-
-def read_line(f):
-    return f.readline()
-
-def next(it):
-    return it.next()
-
 try:
     from email.charset import Charset
     from email.utils import make_msgid
@@ -121,232 +97,6 @@ ADDR_HEADERS = set(['from', 'to', 'cc', 'bcc', 'reply-to', 'sender'])
 # anyway, to make it easier to find (at least most of) the places
 # where the encoding is important.
 (ENCODING, CHARSET) = ('UTF-8', 'utf-8')
-
-
-REF_CREATED_SUBJECT_TEMPLATE = (
-    '%(emailprefix)s%(refname_type)s %(short_refname)s created'
-    ' (now %(newrev_short)s)'
-)
-REF_UPDATED_SUBJECT_TEMPLATE = (
-    '%(emailprefix)s%(refname_type)s %(short_refname)s updated'
-    ' (%(oldrev_short)s -> %(newrev_short)s)'
-)
-REF_DELETED_SUBJECT_TEMPLATE = (
-    '%(emailprefix)s%(refname_type)s %(short_refname)s deleted'
-    ' (was %(oldrev_short)s)'
-)
-
-COMBINED_REFCHANGE_REVISION_SUBJECT_TEMPLATE = (
-    '%(emailprefix)s%(refname_type)s %(short_refname)s updated: %(oneline)s'
-)
-
-REFCHANGE_HEADER_TEMPLATE = """\
-Date: %(send_date)s
-To: %(recipients)s
-Subject: %(subject)s
-MIME-Version: 1.0
-Content-Type: text/%(contenttype)s; charset=%(charset)s
-Content-Transfer-Encoding: 8bit
-Message-ID: %(msgid)s
-From: %(fromaddr)s
-Reply-To: %(reply_to)s
-X-Git-Host: %(fqdn)s
-X-Git-Repo: %(repo_shortname)s
-X-Git-Refname: %(refname)s
-X-Git-Reftype: %(refname_type)s
-X-Git-Oldrev: %(oldrev)s
-X-Git-Newrev: %(newrev)s
-X-Git-NotificationType: ref_changed
-X-Git-Multimail-Version: %(multimail_version)s
-Auto-Submitted: auto-generated
-"""
-
-REFCHANGE_INTRO_TEMPLATE = """\
-This is an automated email from the git hooks/post-receive script.
-
-%(pusher)s pushed a change to %(refname_type)s %(short_refname)s
-in repository %(repo_shortname)s.
-
-"""
-
-
-FOOTER_TEMPLATE = """\
-
--- \n\
-To stop receiving notification emails like this one, please contact
-%(administrator)s.
-"""
-
-
-REWIND_ONLY_TEMPLATE = """\
-This update removed existing revisions from the reference, leaving the
-reference pointing at a previous point in the repository history.
-
- * -- * -- N   %(refname)s (%(newrev_short)s)
-            \\
-             O -- O -- O   (%(oldrev_short)s)
-
-Any revisions marked "omit" are not gone; other references still
-refer to them.  Any revisions marked "discard" are gone forever.
-"""
-
-
-NON_FF_TEMPLATE = """\
-This update added new revisions after undoing existing revisions.
-That is to say, some revisions that were in the old version of the
-%(refname_type)s are not in the new version.  This situation occurs
-when a user --force pushes a change and generates a repository
-containing something like this:
-
- * -- * -- B -- O -- O -- O   (%(oldrev_short)s)
-            \\
-             N -- N -- N   %(refname)s (%(newrev_short)s)
-
-You should already have received notification emails for all of the O
-revisions, and so the following emails describe only the N revisions
-from the common base, B.
-
-Any revisions marked "omit" are not gone; other references still
-refer to them.  Any revisions marked "discard" are gone forever.
-"""
-
-
-NO_NEW_REVISIONS_TEMPLATE = """\
-No new revisions were added by this update.
-"""
-
-
-DISCARDED_REVISIONS_TEMPLATE = """\
-This change permanently discards the following revisions:
-"""
-
-
-NO_DISCARDED_REVISIONS_TEMPLATE = """\
-The revisions that were on this %(refname_type)s are still contained in
-other references; therefore, this change does not discard any commits
-from the repository.
-"""
-
-
-NEW_REVISIONS_TEMPLATE = """\
-The %(tot)s revisions listed above as "new" are entirely new to this
-repository and will be described in separate emails.  The revisions
-listed as "add" were already present in the repository and have only
-been added to this reference.
-
-"""
-
-
-TAG_CREATED_TEMPLATE = """\
-      at %(newrev_short)-8s (%(newrev_type)s)
-"""
-
-
-TAG_UPDATED_TEMPLATE = """\
-*** WARNING: tag %(short_refname)s was modified! ***
-
-    from %(oldrev_short)-8s (%(oldrev_type)s)
-      to %(newrev_short)-8s (%(newrev_type)s)
-"""
-
-
-TAG_DELETED_TEMPLATE = """\
-*** WARNING: tag %(short_refname)s was deleted! ***
-
-"""
-
-
-# The template used in summary tables.  It looks best if this uses the
-# same alignment as TAG_CREATED_TEMPLATE and TAG_UPDATED_TEMPLATE.
-BRIEF_SUMMARY_TEMPLATE = """\
-%(action)8s %(rev_short)-8s %(text)s
-"""
-
-
-NON_COMMIT_UPDATE_TEMPLATE = """\
-This is an unusual reference change because the reference did not
-refer to a commit either before or after the change.  We do not know
-how to provide full information about this reference change.
-"""
-
-
-REVISION_HEADER_TEMPLATE = """\
-Date: %(send_date)s
-To: %(recipients)s
-Cc: %(cc_recipients)s
-Subject: %(emailprefix)s%(num)02d/%(tot)02d: %(oneline)s
-MIME-Version: 1.0
-Content-Type: text/%(contenttype)s; charset=%(charset)s
-Content-Transfer-Encoding: 8bit
-From: %(fromaddr)s
-Reply-To: %(reply_to)s
-In-Reply-To: %(reply_to_msgid)s
-References: %(reply_to_msgid)s
-X-Git-Host: %(fqdn)s
-X-Git-Repo: %(repo_shortname)s
-X-Git-Refname: %(refname)s
-X-Git-Reftype: %(refname_type)s
-X-Git-Rev: %(rev)s
-X-Git-NotificationType: diff
-X-Git-Multimail-Version: %(multimail_version)s
-Auto-Submitted: auto-generated
-"""
-
-REVISION_INTRO_TEMPLATE = """\
-This is an automated email from the git hooks/post-receive script.
-
-%(pusher)s pushed a commit to %(refname_type)s %(short_refname)s
-in repository %(repo_shortname)s.
-
-"""
-
-LINK_TEXT_TEMPLATE = """\
-View the commit online:
-%(browse_url)s
-
-"""
-
-LINK_HTML_TEMPLATE = """\
-<p><a href="%(browse_url)s">View the commit online</a>.</p>
-"""
-
-
-REVISION_FOOTER_TEMPLATE = FOOTER_TEMPLATE
-
-
-# Combined, meaning refchange+revision email (for single-commit additions)
-COMBINED_HEADER_TEMPLATE = """\
-Date: %(send_date)s
-To: %(recipients)s
-Subject: %(subject)s
-MIME-Version: 1.0
-Content-Type: text/%(contenttype)s; charset=%(charset)s
-Content-Transfer-Encoding: 8bit
-Message-ID: %(msgid)s
-From: %(fromaddr)s
-Reply-To: %(reply_to)s
-X-Git-Host: %(fqdn)s
-X-Git-Repo: %(repo_shortname)s
-X-Git-Refname: %(refname)s
-X-Git-Reftype: %(refname_type)s
-X-Git-Oldrev: %(oldrev)s
-X-Git-Newrev: %(newrev)s
-X-Git-Rev: %(rev)s
-X-Git-NotificationType: ref_changed_plus_diff
-X-Git-Multimail-Version: %(multimail_version)s
-Auto-Submitted: auto-generated
-"""
-
-COMBINED_INTRO_TEMPLATE = """\
-This is an automated email from the git hooks/post-receive script.
-
-%(pusher)s pushed a commit to %(refname_type)s %(short_refname)s
-in repository %(repo_shortname)s.
-
-"""
-
-COMBINED_FOOTER_TEMPLATE = FOOTER_TEMPLATE
-
 
 class CommandError(Exception):
     def __init__(self, cmd, retcode):
@@ -404,7 +154,7 @@ def read_git_output(args, input=None, keepends=False, **kw):
 def read_output(cmd, input=None, keepends=False, **kw):
     if input:
         stdin = subprocess.PIPE
-        input = str_to_bytes(input)
+        input = utils.str_to_bytes(input)
     else:
         stdin = None
     errors = 'strict'
@@ -412,11 +162,11 @@ def read_output(cmd, input=None, keepends=False, **kw):
         errors = kw['errors']
         del kw['errors']
     p = subprocess.Popen(
-        (str_to_bytes(w) for w in cmd),
+        (utils.str_to_bytes(w) for w in cmd),
         stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw
     )
     (out, err) = p.communicate(input)
-    out = bytes_to_str(out, errors=errors)
+    out = utils.bytes_to_str(out, errors=errors)
     retcode = p.wait()
     if retcode:
         raise CommandError(cmd, retcode)
@@ -481,7 +231,7 @@ def header_encode(text, header_name=None):
     if not isinstance(text, unicode):
         text = unicode(text, 'utf-8')
 
-    if is_ascii(text):
+    if utils.is_ascii(text):
         charset = 'ascii'
     else:
         charset = 'utf-8'
@@ -502,7 +252,7 @@ def addr_header_encode(text, header_name=None):
         for name, emailaddr in getaddresses([text])
     )
 
-    if is_ascii(text):
+    if utils.is_ascii(text):
         charset = 'ascii'
     else:
         charset = 'utf-8'
@@ -811,7 +561,7 @@ class Change(object):
         values = self.get_values(**extra_values)
         if html_escape_val:
             for k in values:
-                if is_string(values[k]):
+                if utils.is_string(values[k]):
                     values[k] = cgi.escape(values[k], True)
         for line in template.splitlines(True):
             yield line % values
@@ -922,7 +672,7 @@ class Change(object):
                            self._contains_html_diff)
         intro = self.generate_email_intro(html_escape_val)
         if not self.environment.html_in_intro:
-            intro = self._wrap_for_html(intro)
+            intro = self._wrap_for_htutml(intro)
         for line in intro:
             yield line
 
@@ -1069,7 +819,7 @@ class Revision(Change):
 
     def generate_email_header(self, **extra_values):
         for line in self.expand_header_lines(
-                REVISION_HEADER_TEMPLATE, **extra_values
+                templates.REVISION_HEADER_TEMPLATE, **extra_values
         ):
             yield line
 
@@ -1078,12 +828,12 @@ class Revision(Change):
             base_url += '%(id)s'
         url = "".join(self.expand_lines(base_url))
         if self._content_type == 'html':
-            for line in self.expand_lines(LINK_HTML_TEMPLATE,
+            for line in self.expand_lines(templates.LINK_HTML_TEMPLATE,
                                           html_escape_val=True,
                                           browse_url=url):
                 yield line
         elif self._content_type == 'plain':
-            for line in self.expand_lines(LINK_TEXT_TEMPLATE,
+            for line in self.expand_lines(templates.LINK_TEXT_TEMPLATE,
                                           html_escape_val=False,
                                           browse_url=url):
                 yield line
@@ -1091,7 +841,7 @@ class Revision(Change):
             raise NotImplementedError("Content-type %s unsupported. Please report it as a bug.")
 
     def generate_email_intro(self, html_escape_val=False):
-        for line in self.expand_lines(REVISION_INTRO_TEMPLATE,
+        for line in self.expand_lines(templates.REVISION_INTRO_TEMPLATE,
                                       html_escape_val=html_escape_val):
             yield line
 
@@ -1108,7 +858,7 @@ class Revision(Change):
                 yield line
 
     def generate_email_footer(self, html_escape_val):
-        return self.expand_lines(REVISION_FOOTER_TEMPLATE,
+        return self.expand_lines(templates.REVISION_FOOTER_TEMPLATE,
                                  html_escape_val=html_escape_val)
 
     def generate_email(self, push, body_filter=None, extra_header_values={}):
@@ -1220,9 +970,9 @@ class ReferenceChange(Change):
         self.showgraph = environment.refchange_showgraph
         self.showlog = environment.refchange_showlog
 
-        self.header_template = REFCHANGE_HEADER_TEMPLATE
-        self.intro_template = REFCHANGE_INTRO_TEMPLATE
-        self.footer_template = FOOTER_TEMPLATE
+        self.header_template = templates.REFCHANGE_HEADER_TEMPLATE
+        self.intro_template = templates.REFCHANGE_INTRO_TEMPLATE
+        self.footer_template = templates.FOOTER_TEMPLATE
 
     def _compute_values(self):
         values = Change._compute_values(self)
@@ -1279,9 +1029,9 @@ class ReferenceChange(Change):
 
     def get_subject(self):
         template = {
-            'create': REF_CREATED_SUBJECT_TEMPLATE,
-            'update': REF_UPDATED_SUBJECT_TEMPLATE,
-            'delete': REF_DELETED_SUBJECT_TEMPLATE,
+            'create': templates.REF_CREATED_SUBJECT_TEMPLATE,
+            'update': templates.REF_UPDATED_SUBJECT_TEMPLATE,
+            'delete': templates.REF_DELETED_SUBJECT_TEMPLATE,
         }[self.change_type]
         return self.expand(template)
 
@@ -1350,7 +1100,7 @@ class ReferenceChange(Change):
                 yield line
 
     def generate_new_revision_summary(self, tot, new_commits_list, push):
-        for line in self.expand_lines(NEW_REVISIONS_TEMPLATE, tot=tot):
+        for line in self.expand_lines(templates.NEW_REVISIONS_TEMPLATE, tot=tot):
             yield line
         for line in self.generate_revision_change_graph(push):
             yield line
@@ -1379,14 +1129,14 @@ class ReferenceChange(Change):
                 for r in new_revisions:
                     (sha1, subject) = r.rev.get_summary()
                     yield r.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action='new', text=subject,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action='new', text=subject,
                     )
                 yield '\n'
                 for line in self.generate_new_revision_summary(
                         tot, [r.rev.sha1 for r in new_revisions], push):
                     yield line
             else:
-                for line in self.expand_lines(NO_NEW_REVISIONS_TEMPLATE):
+                for line in self.expand_lines(templates.NO_NEW_REVISIONS_TEMPLATE):
                     yield line
 
         elif self.new.commit_sha1 and self.old.commit_sha1:
@@ -1430,7 +1180,7 @@ class ReferenceChange(Change):
                     else:
                         action = 'omit'
                     yield self.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action=action,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action=action,
                         rev_short=sha1, text=subject,
                     )
                 for (sha1, subject) in adds:
@@ -1439,11 +1189,11 @@ class ReferenceChange(Change):
                     else:
                         action = 'add'
                     yield self.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action=action,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action=action,
                         rev_short=sha1, text=subject,
                     )
                 yield '\n'
-                for line in self.expand_lines(NON_FF_TEMPLATE):
+                for line in self.expand_lines(templates.NON_FF_TEMPLATE):
                     yield line
 
             elif discards:
@@ -1453,17 +1203,17 @@ class ReferenceChange(Change):
                     else:
                         action = 'omit'
                     yield self.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action=action,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action=action,
                         rev_short=sha1, text=subject,
                     )
                 yield '\n'
-                for line in self.expand_lines(REWIND_ONLY_TEMPLATE):
+                for line in self.expand_lines(templates.REWIND_ONLY_TEMPLATE):
                     yield line
 
             elif adds:
                 (sha1, subject) = self.old.get_summary()
                 yield self.expand(
-                    BRIEF_SUMMARY_TEMPLATE, action='from',
+                    templates.BRIEF_SUMMARY_TEMPLATE, action='from',
                     rev_short=sha1, text=subject,
                 )
                 for (sha1, subject) in adds:
@@ -1472,7 +1222,7 @@ class ReferenceChange(Change):
                     else:
                         action = 'add'
                     yield self.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action=action,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action=action,
                         rev_short=sha1, text=subject,
                     )
 
@@ -1483,7 +1233,7 @@ class ReferenceChange(Change):
                         len(new_commits), new_commits_list, push):
                     yield line
             else:
-                for line in self.expand_lines(NO_NEW_REVISIONS_TEMPLATE):
+                for line in self.expand_lines(templates.NO_NEW_REVISIONS_TEMPLATE):
                     yield line
                 for line in self.generate_revision_change_graph(push):
                     yield line
@@ -1517,22 +1267,22 @@ class ReferenceChange(Change):
             ]
 
             if discarded_revisions:
-                for line in self.expand_lines(DISCARDED_REVISIONS_TEMPLATE):
+                for line in self.expand_lines(templates.DISCARDED_REVISIONS_TEMPLATE):
                     yield line
                 yield '\n'
                 for r in discarded_revisions:
                     (sha1, subject) = r.rev.get_summary()
                     yield r.expand(
-                        BRIEF_SUMMARY_TEMPLATE, action='discard', text=subject,
+                        templates.BRIEF_SUMMARY_TEMPLATE, action='discard', text=subject,
                     )
                 for line in self.generate_revision_change_graph(push):
                     yield line
             else:
-                for line in self.expand_lines(NO_DISCARDED_REVISIONS_TEMPLATE):
+                for line in self.expand_lines(templates.NO_DISCARDED_REVISIONS_TEMPLATE):
                     yield line
 
         elif not self.old.commit_sha1 and not self.new.commit_sha1:
-            for line in self.expand_lines(NON_COMMIT_UPDATE_TEMPLATE):
+            for line in self.expand_lines(templates.NON_COMMIT_UPDATE_TEMPLATE):
                 yield line
 
     def generate_create_summary(self, push):
@@ -1541,7 +1291,7 @@ class ReferenceChange(Change):
         # This is a new reference and so oldrev is not valid
         (sha1, subject) = self.new.get_summary()
         yield self.expand(
-            BRIEF_SUMMARY_TEMPLATE, action='at',
+            templates.BRIEF_SUMMARY_TEMPLATE, action='at',
             rev_short=sha1, text=subject,
         )
         yield '\n'
@@ -1556,7 +1306,7 @@ class ReferenceChange(Change):
 
         (sha1, subject) = self.old.get_summary()
         yield self.expand(
-            BRIEF_SUMMARY_TEMPLATE, action='was',
+            templates.BRIEF_SUMMARY_TEMPLATE, action='was',
             rev_short=sha1, text=subject,
         )
         yield '\n'
@@ -1677,13 +1427,13 @@ class BranchChange(ReferenceChange):
         if extra_header_values:
             values.update(extra_header_values)
         if 'subject' not in extra_header_values:
-            values['subject'] = self.expand(COMBINED_REFCHANGE_REVISION_SUBJECT_TEMPLATE, **values)
+            values['subject'] = self.expand(templates.COMBINED_REFCHANGE_REVISION_SUBJECT_TEMPLATE, **values)
 
         self._single_revision = revision
         self._contains_diff()
-        self.header_template = COMBINED_HEADER_TEMPLATE
-        self.intro_template = COMBINED_INTRO_TEMPLATE
-        self.footer_template = COMBINED_FOOTER_TEMPLATE
+        self.header_template = templates.COMBINED_HEADER_TEMPLATE
+        self.intro_template = templates.COMBINED_INTRO_TEMPLATE
+        self.footer_template = templates.COMBINED_FOOTER_TEMPLATE
 
         def revision_gen_link(base_url):
             # revision is used only to generate the body, and
@@ -1719,7 +1469,7 @@ class BranchChange(ReferenceChange):
         yield self.expand("The following commit(s) were added to %(refname)s by this push:\n")
         for (sha1, subject) in adds:
             yield self.expand(
-                BRIEF_SUMMARY_TEMPLATE, action='new',
+                templates.BRIEF_SUMMARY_TEMPLATE, action='new',
                 rev_short=sha1, text=subject,
             )
 
@@ -1759,7 +1509,7 @@ class AnnotatedTagChange(ReferenceChange):
         )
 
         yield self.expand(
-            BRIEF_SUMMARY_TEMPLATE, action='tagging',
+            templates.BRIEF_SUMMARY_TEMPLATE, action='tagging',
             rev_short=tagobject, text='(%s)' % (tagtype,),
         )
         if tagtype == 'commit':
@@ -1816,7 +1566,7 @@ class AnnotatedTagChange(ReferenceChange):
     def generate_create_summary(self, push):
         """Called for the creation of an annotated tag."""
 
-        for line in self.expand_lines(TAG_CREATED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_CREATED_TEMPLATE):
             yield line
 
         for line in self.describe_tag(push):
@@ -1827,7 +1577,7 @@ class AnnotatedTagChange(ReferenceChange):
 
         This is probably a rare event and may not even be allowed."""
 
-        for line in self.expand_lines(TAG_UPDATED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_UPDATED_TEMPLATE):
             yield line
 
         for line in self.describe_tag(push):
@@ -1836,7 +1586,7 @@ class AnnotatedTagChange(ReferenceChange):
     def generate_delete_summary(self, push):
         """Called when a non-annotated reference is updated."""
 
-        for line in self.expand_lines(TAG_DELETED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_DELETED_TEMPLATE):
             yield line
 
         yield self.expand('   tag was  %(oldrev_short)s\n')
@@ -1857,19 +1607,19 @@ class NonAnnotatedTagChange(ReferenceChange):
     def generate_create_summary(self, push):
         """Called for the creation of an annotated tag."""
 
-        for line in self.expand_lines(TAG_CREATED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_CREATED_TEMPLATE):
             yield line
 
     def generate_update_summary(self, push):
         """Called when a non-annotated reference is updated."""
 
-        for line in self.expand_lines(TAG_UPDATED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_UPDATED_TEMPLATE):
             yield line
 
     def generate_delete_summary(self, push):
         """Called when a non-annotated reference is updated."""
 
-        for line in self.expand_lines(TAG_DELETED_TEMPLATE):
+        for line in self.expand_lines(templates.TAG_DELETED_TEMPLATE):
             yield line
 
         for line in ReferenceChange.generate_delete_summary(self, push):
@@ -2028,7 +1778,7 @@ class SMTPMailer(Mailer):
                 self.smtp.login(self.username, self.password)
             msg = ''.join(lines)
             # turn comma-separated list into Python list if needed.
-            if is_string(to_addrs):
+            if utils.is_string(to_addrs):
                 to_addrs = [email for (name, email) in getaddresses([to_addrs])]
             self.smtp.sendmail(self.envelopesender, to_addrs, msg)
         except smtplib.SMTPResponseException:
@@ -2036,7 +1786,7 @@ class SMTPMailer(Mailer):
             self.environment.get_logger().error(
                 '*** Error sending email ***\n'
                 '*** Error %d: %s\n'
-                % (err.smtp_code, bytes_to_str(err.smtp_error)))
+                % (err.smtp_code, utils.bytes_to_str(err.smtp_error)))
             try:
                 smtp = self.smtp
                 # delete the field before quit() so that in case of
@@ -2062,10 +1812,10 @@ class OutputMailer(Mailer):
         self.f = f
 
     def send(self, lines, to_addrs):
-        write_str(self.f, self.SEPARATOR)
+        utils.write_str(self.f, self.SEPARATOR)
         for line in lines:
-            write_str(self.f, line)
-        write_str(self.f, self.SEPARATOR)
+            utils.write_str(self.f, line)
+        utils.write_str(self.f, self.SEPARATOR)
 
 
 def get_git_dir():
@@ -2292,7 +2042,7 @@ class Environment(object):
     def get_logger(self):
         """Get (possibly creates) the logger associated to this environment."""
         if self.logger is None:
-            self.logger = Logger(self)
+            self.logger = utils.Logger(self)
         return self.logger
 
     def get_repo_shortname(self):
@@ -3332,7 +3082,7 @@ def run_as_post_receive_hook(environment, mailer):
     ref_filter_regex, is_inclusion_filter = environment.get_ref_filter_regex(True)
     changes = []
     while True:
-        line = read_line(sys.stdin)
+        line = utils.read_line(sys.stdin)
         if line == '':
             break
         (oldrev, newrev, refname) = line.strip().split(' ', 2)
@@ -3447,7 +3197,6 @@ def choose_environment(config, osenv=None, env=None, recipients=None):
     )
     return environment_klass(**environment_kw)
 
-
 def get_version():
     oldcwd = os.getcwd()
     try:
@@ -3463,69 +3212,6 @@ def get_version():
     finally:
         os.chdir(oldcwd)
     return __version__
-
-
-class Logger(object):
-    def parse_verbose(self, verbose):
-        if verbose > 0:
-            return logging.DEBUG
-        else:
-            return logging.INFO
-
-    def create_log_file(self, environment, name, path, verbosity):
-        log_file = logging.getLogger(name)
-        file_handler = logging.FileHandler(path)
-        log_fmt = logging.Formatter("%(asctime)s [%(levelname)-5.5s]  %(message)s")
-        file_handler.setFormatter(log_fmt)
-        log_file.addHandler(file_handler)
-        log_file.setLevel(verbosity)
-        return log_file
-
-    def __init__(self, environment):
-        self.environment = environment
-        self.loggers = []
-        stderr_log = logging.getLogger('git_multimail.stderr')
-
-        class EncodedStderr():
-            def write(self, x):
-                write_str(sys.stderr, x)
-
-        stderr_handler = logging.StreamHandler(EncodedStderr())
-        stderr_log.addHandler(stderr_handler)
-        stderr_log.setLevel(self.parse_verbose(environment.verbose))
-        self.loggers.append(stderr_log)
-
-        if environment.debug_log_file is not None:
-            debug_log_file = self.create_log_file(
-                environment, 'git_multimail.debug', environment.debug_log_file, logging.DEBUG)
-            self.loggers.append(debug_log_file)
-
-        if environment.log_file is not None:
-            log_file = self.create_log_file(
-                environment, 'git_multimail.file', environment.log_file, logging.INFO)
-            self.loggers.append(log_file)
-
-        if environment.error_log_file is not None:
-            error_log_file = self.create_log_file(
-                environment, 'git_multimail.error', environment.error_log_file, logging.ERROR)
-            self.loggers.append(error_log_file)
-
-    def info(self, msg):
-        for l in self.loggers:
-            l.info(msg)
-
-    def debug(self, msg):
-        for l in self.loggers:
-            l.debug(msg)
-
-    def warning(self, msg):
-        for l in self.loggers:
-            l.warning(msg)
-
-    def error(self, msg):
-        for l in self.loggers:
-            l.error(msg)
-
 
 def main(args):
     parser = optparse.OptionParser(
