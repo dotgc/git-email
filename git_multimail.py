@@ -84,7 +84,7 @@ except ImportError:
     from email.Header import Header
 
 
-DEBUG = False
+DEBUG = True
 
 ZEROS = '0' * 40
 LOGBEGIN = '- Log -----------------------------------------------------------------\n'
@@ -395,9 +395,7 @@ def generate_summaries(*log_args):
     commit specified by log_args (subject is the first line of the
     commit message as a string without EOLs)."""
 
-    cmd = [
-        'log', '--abbrev', '--format=%h %s',
-    ] + list(log_args) + ['--']
+    cmd = ['log', '--abbrev', '--format=%h %s'] + list(log_args) + ['--']
     for line in read_git_lines(cmd):
         yield tuple(line.split(' ', 1))
 
@@ -3155,7 +3153,7 @@ KNOWN_ENVIRONMENTS = {
 }
 
 
-def choose_environment(config, osenv=None, env=None, recipients=None):
+def choose_environment(config, osenv=None, recipients=None):
     if not osenv:
         osenv = os.environ
 
@@ -3173,11 +3171,7 @@ def choose_environment(config, osenv=None, env=None, recipients=None):
         'config': config,
     }
 
-    if not env:
-        env = config.get('environment')
-
-    if not env:
-        env = 'generic'
+    env = 'generic'
 
     environment_mixins.insert(0, KNOWN_ENVIRONMENTS[env])
 
@@ -3220,17 +3214,10 @@ def main(args):
     )
 
     parser.add_option(
-        '--environment', '--env', action='store', type='choice',
-        choices=list(KNOWN_ENVIRONMENTS.keys()), default=None,
-        help=(
-            'Choose type of environment is in use.  Default is taken from '
-            'multimailhook.environment if set; otherwise "generic".'
-        ),
-    )
-    parser.add_option(
         '--stdout', action='store_true', default=False,
         help='Output emails to stdout rather than sending them.',
     )
+
     parser.add_option(
         '--recipients', action='store', default=None,
         help='Set list of email recipients for all types of emails.',
@@ -3280,7 +3267,6 @@ def main(args):
     try:
         environment = choose_environment(
             config, osenv=os.environ,
-            env=options.environment,
             recipients=options.recipients,
         )
 
@@ -3329,6 +3315,7 @@ def main(args):
         except:
             sys.stderr.write(msg)
         sys.exit(1)
+    print "here2"
 
 if __name__ == '__main__':
     main(sys.argv[1:])
